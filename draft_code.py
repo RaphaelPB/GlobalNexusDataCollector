@@ -19,14 +19,20 @@ import io
 import unicodedata
 idx=pd.IndexSlice #pandas index slicer
 #%% INPUTS
-#Files
+#Files - general working directory
 folder_path=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS'
 
+#Basin file corresponds to the limits of the River Basin 
+#(you might already wnat to account for the fact that they might be several river basins in the study area)
 basin_file=r'C:\Users\RAPY\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\official\Area_estudio_Amz_fixed.shp'
-#catch_file=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\amazon_countries_clipped.shp'
+
+#Catchment file, corresponds to the hydrological and agricultural resolution in the model
+#There is a world-wide catchment (and river basin) data - see  https://www.hydrosheds.org/
 catch_file=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\amazon_catchment_HBID_v2_wcountry_cleaned.shp'
+#catch_file=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\amazon_countries_clipped.shp'
 #catch_file=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\Countries_WGS84.shp'
-#Projection crs
+
+#Projection crs - IT is VERY important to ensure that all data have the same projection when performing calculations
 bCRS='EPSG:4326'
 
 #plot options
@@ -50,7 +56,7 @@ def get_t0(input_nc,variable):
         t0=ncdata.time.values[0]
     return t0
 
-#export to excel
+#export to excel - In general csv to be prefered over excel
 def export_to_excel(outpath,data):   
     writer = pd.ExcelWriter(outpath, engine='openpyxl') #open excel file to dump results
     if 'geometry' in data.columns:
@@ -117,71 +123,30 @@ def netcdf_to_shape(input_nc,catch_file,clip_file=None,basin_file=None,bCRS='EPS
 
 #%% Calculations
 #shapefile to store data in
+idname='SUB_BAS' #what is the id field of the shapefile
 catch_shape = gpd.read_file(catch_file).to_crs(bCRS)
-catch_shape['ncatch']=catch_shape['SUB_BAS'].apply(lambda k: 'c'+str(k))
+catch_shape['ncatch']=catch_shape[idname].apply(lambda k: 'c'+str(k))
 #catch_shape['catch_ds']=catch_shape['TO_BAS'].apply(lambda k: 'c'+str(k))
 #catch_shape=catch_shape.rename({'CNTRY_NAME':'ncountry'},axis=1)
-catch_shape=catch_shape.drop(['fid','cat','LEGEND','__median'],axis=1)
+#catch_shape=catch_shape.drop(['fid','cat','LEGEND','__median'],axis=1)
 #catch_shape = catch_shape[['SUB_BAS','geometry']]
 #catch_shape.to_file(r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Boundaries\Countries_WGS84.shp')
 area_km2 = catch_shape.to_crs({'proj':'cea'}).area/10**6 #area in km2  
 catch_shape['area_km2'] = area_km2
 
-#%% Livestock (cattle)
+#%% Livestock (cattle) 
+#source: https://dataverse.harvard.edu/dataverse/glw or https://www.fao.org/livestock-systems/global-distributions/en/
+#data: 
 raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Agriculture\Livestock\5_Ct_2010_Da.tif'
 band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster, 
                                     all_touched=False, stats='sum'))
 catch_shape['cattle_upkm2'] = band_stats['sum']/area_km2
 
-#%% Population
-input_nc=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\ISMIP\population\population_rcp26soc_0p5deg_annual_2006-2099.nc4'
-sel_time=[2020,2030,2050]
-pop=netcdf_to_shape(input_nc,catch_file,clip_file=None,basin_file=None,bCRS='EPSG:4326',
-                    variable=None,all_touched=False,stats='sum',CF=1, 
-                    t0=146,refyear=1860,sel_time=sel_time,cl_name='pop_')
-catch_shape=pd.concat([catch_shape,pop[['pop_'+str(y) for y in sel_time]]],
-                      axis=1)
 
-#%% deforestation
-def l1_10(x):
-    x=np.array(x)
-    return ((0 < x) & (x <= 10)).sum()
-    #return sum([1 for k in x if 0<=k<=10])
-def l11_15(x):
-    return sum([1 for k in x if 10<k<=15])
-def l16_20(x):
-    return sum([1 for k in x if 15<k<=20])
-raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\Hansen_GFC_2020_lossyear_merged.tif'
-band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster,
-                                    all_touched=False, #stats='sum'))#,
-                                    add_stats={'loss1_10':l1_10}))#,
-                                               #'loss11_15':l11_15,'loss16_20':l16_20}))
-                                               
-#%% deforestation TEST
-# File path
-dem_fp = r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\Hansen_GFC_2020_lossyear_merged.tif'
-# Read the Digital Elevation Model for Helsinki
-dem = rasterio.open(dem_fp, dtype='uint8')
-# Read the raster values
-array = dem.read(1)
-# Get the affine
-affine = dem.transform
-# Calculate zonal statistics for Kallio
-zs_kallio = zonal_stats(catch_shape, array, affine=affine, stats=['min'], dtype='uint8')           
-
-#%% Tree cover
-raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\amazon_tree_cover_epoch2015_v202.tif'
-band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster, 
-                                    all_touched=True, stats='mean'))
-catch_shape['treecover_p']=band_stats
-
-#%% Soybeans
-raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Agriculture\SPAM_Soybean_rainfed_harvested_clipped.tif'
-band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster, 
-                                    all_touched=False, stats='sum'))/1000
-catch_shape['soy_kha']=band_stats
 
 #%% Population
+#source: https://doi.org/10.7927/q7z9-9r69
+#download: https://sedac.ciesin.columbia.edu/data/set/popdynamics-1-km-downscaled-pop-base-year-projection-ssp-2000-2100-rev01
 folder=r'C:\Users\RAPY\OneDrive - COWI\Data\GlobalPopulationProjections'
 for scen in ['SSP1','SSP3','SSP5']:
     for year in [2020,2030,2040,2050]:
@@ -193,7 +158,16 @@ for scen in ['SSP1','SSP3','SSP5']:
         catch_shape[scen+'_'+str(year)]=band_stats
 catch_shape=catch_shape.sort_index(axis=1)
 
+#%% Population - DO NOT USE THIS ONE
+input_nc=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\ISMIP\population\population_rcp26soc_0p5deg_annual_2006-2099.nc4'
+sel_time=[2020,2030,2050]
+pop=netcdf_to_shape(input_nc,catch_file,clip_file=None,basin_file=None,bCRS='EPSG:4326',
+                    variable=None,all_touched=False,stats='sum',CF=1, 
+                    t0=146,refyear=1860,sel_time=sel_time,cl_name='pop_')
+catch_shape=pd.concat([catch_shape,pop[['pop_'+str(y) for y in sel_time]]],
+                      axis=1)
 #%% Power plants
+#source: http://datasets.wri.org/dataset/globalpowerplantdatabase
 from shapely.geometry import Point
 path = r'C:\Users\RAPY\OneDrive - COWI\Data\global_power_plant_database_v_1_3\global_power_plant_database.csv'
 pdata = pd.read_csv(path)
@@ -217,7 +191,53 @@ gpdata_amz_ag[['capacity_mw','commissioning_year']].to_csv(os.path.join(folder_p
 gpdata_noamz_ag[['capacity_mw','commissioning_year']].to_csv(os.path.join(folder_path,'powercap_country_noamazon.csv'))
 #catch_shape = gpd.read_file(catch_file).to_crs(bCRS)
 
+#%% Tree cover
+raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\amazon_tree_cover_epoch2015_v202.tif'
+band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster, 
+                                    all_touched=True, stats='mean'))
+catch_shape['treecover_p']=band_stats
+
+#%% deforestation - Did not get it to work for now
+def l1_10(x):
+    x=np.array(x)
+    return ((0 < x) & (x <= 10)).sum()
+    #return sum([1 for k in x if 0<=k<=10])
+def l11_15(x):
+    return sum([1 for k in x if 10<k<=15])
+def l16_20(x):
+    return sum([1 for k in x if 15<k<=20])
+raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\Hansen_GFC_2020_lossyear_merged.tif'
+band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster,
+                                    all_touched=False, #stats='sum'))#,
+                                    add_stats={'loss1_10':l1_10}))#,
+                                               #'loss11_15':l11_15,'loss16_20':l16_20}))
+                                               
+#%% deforestation TEST
+#source: https://storage.googleapis.com/earthenginepartners-hansen/GFC-2020-v1.8/download.html
+# File path
+dem_fp = r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Forest_loss_year\Hansen_GFC_2020_lossyear_merged.tif'
+# Read the Digital Elevation Model for Helsinki
+dem = rasterio.open(dem_fp, dtype='uint8')
+# Read the raster values
+array = dem.read(1)
+# Get the affine
+affine = dem.transform
+# Calculate zonal statistics for Kallio
+zs_kallio = zonal_stats(catch_shape, array, affine=affine, stats=['min'], dtype='uint8')           
+
+#%% Soybeans
+#this was just for mapping example, see : https://github.com/RaphaelPB/SPAM_data_reader (maybe keep for later stage)
+raster=r'C:\Users\rapy\OneDrive - COWI\Amazon_nexus\QGIS\Agriculture\SPAM_Soybean_rainfed_harvested_clipped.tif'
+band_stats=pd.DataFrame(zonal_stats(vectors=catch_shape, raster=raster, 
+                                    all_touched=False, stats='sum'))/1000
+catch_shape['soy_kha']=band_stats
+
+
 #%% YIELD
+#source: https://data.isimip.org/search/tree/ISIMIP2b%2FOutputData%2Fagriculture/variable/yield/
+#note: there are various crop yield models, climate and socio-economic scenarios
+#technically you do not need to download that data, you can read directly from server
+
 sel_time=range(2015,2056)
 idxname='CNTRY_NAME' #'SUB_BAS' #
 raster=r'C:\Users\RAPY\OneDrive - COWI\Amazon_nexus\QGIS\ISMIP\Yield\clm45_gfdl-esm2m_ewembi_rcp26_2005soc_co2_yield-soy-noirr_global_annual_2006_2099.nc4'
@@ -226,7 +246,7 @@ miidx=pd.MultiIndex.from_product([catch_shape['CNTRY_NAME'].values,sel_time],nam
 yldp=pd.DataFrame(index=miidx,columns=models)
   
 for m in models:
-    rstr=raster.split('clm45')[0]+m+raster.split('clm45')[1]
+    rstr=raster.split('clm45')[0]+m+raster.split('clm45')[1] #this changes the model
     if os.path.exists(rstr):
         yld=netcdf_to_shape(rstr,catch_file,clip_file=None,basin_file=None,bCRS='EPSG:4326',
                             variable=None,all_touched=True,stats='mean',CF=1, 
@@ -245,6 +265,9 @@ for y in years:
     avyld.loc[idx[:,y],:]=yldp.loc[idx[:,yrs],:].groupby('country').mean().values
 
 #%%Runoff, Rainfall, ET
+#source: https://data.isimip.org/search/tree/ISIMIP2b%2FOutputData%2Fwater_regional/
+#similar to yield, multiple models and scenarios
+
 ISRUNOFF=False
 cl_name='rainfallMm3pkm2' #'rainfall_mmpmonth'#
 idxname='CNTRY_NAME' #'SUB_BAS' #
@@ -273,6 +296,9 @@ for idd in catch_shape[idxname].values:
     param_wi.loc[:,idd]=param_net.loc[idx[idd,:],cl_name].values
 
 #%%Collect reservoirs
+#source: GRAND database, global database - http://globaldamwatch.org/grand/ (download link does not work lately, but available on DTU server)
+#source for south america: https://essd.copernicus.org/articles/13/213/2021/essd-13-213-2021-assets.html
+    
 MINCAP=50 #minimum storing capacity to consider (in Mm3-depends on data)
 #Import reservoirs
 path = r'C:\Users\RAPY\OneDrive - COWI\Data\6_ddsa_dams\DDSA.shp'
